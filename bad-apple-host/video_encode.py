@@ -29,6 +29,7 @@ def img_to_matrix(image_path: str):
     return image
 
 def print_matrix(matrix):
+    os.system("clear")
     for i in range(0, len(matrix)):
         line = ""
         for j in range(0, len(matrix[i])):

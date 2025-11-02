@@ -21,8 +21,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ssd1306.h"
+#include "ssd1306_fonts.h"
 #include <stdint.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,6 +35,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define MAX_BUF 128
+#define FRAME_BUF_SIZE (128 * 64 / 8)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -47,7 +50,12 @@ UART_HandleTypeDef hlpuart1;
 
 /* USER CODE BEGIN PV */
 char uartBuf[MAX_BUF];
-uint8_t i2cAddrLCD;
+uint8_t i2cAddrOLED;
+uint8_t frameBuffer[FRAME_BUF_SIZE];
+uint16_t pixelsRecieved;
+extern uint8_t SSD1306_Buffer[];
+
+uint8_t uartHeader[2];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -56,9 +64,12 @@ static void MX_GPIO_Init(void);
 static void MX_LPUART1_UART_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
-void uartWriteStr(char *buf, const char *message, uint16_t size);
+void uartWriteStr(char *buf, const char *message, size_t bufSize);
+void uartRecvFrame(uint8_t *buffer, size_t size);
 static uint8_t scanI2C(void);
 void byteToStr(uint8_t b, char *buf, int size);
+void drawFrameUART(uint8_t *frameBuffer, size_t size);
+void drawFrameOled(uint8_t *frameBuffer, size_t size);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -73,17 +84,57 @@ void byteToStr(uint8_t b, char *buf, int size);
     message - pointer to string that will be transmitted
     size - size of the buffer to avoid overflow
 */
-void uartWriteStr(char *buf, const char *message, uint16_t size) {
+void uartWriteStr(char *buf, const char *message, size_t bufSize) {
   int i = 0;
-  while ((i < size) && (message[i] != '\0')) {
+  while ((i < bufSize) && (message[i] != '\0')) {
     buf[i] = message[i];
     i++;
   }
-  while (i < size) {
+  while (i < bufSize) {
     buf[i] = '\0';
     i++;
   }
-  HAL_UART_Transmit(&hlpuart1, (uint8_t *)uartBuf, size, 10);
+  HAL_UART_Transmit(&hlpuart1, (uint8_t *)uartBuf, bufSize, 10);
+}
+
+void uartRecvFrame(uint8_t *buffer, size_t size) {
+
+  HAL_StatusTypeDef status;
+  size_t recieved = 0;
+
+  while (recieved < size) {
+    size_t chunk = 64;
+
+    if ((size - recieved) < chunk)
+      chunk = size - recieved;
+
+    status = HAL_UART_Receive(&hlpuart1, buffer + recieved, chunk, 1000);
+
+    if (status == HAL_OK) {
+      recieved += chunk;
+    }
+  }
+
+  pixelsRecieved = recieved;
+}
+
+void drawFrameUART(uint8_t *frameBuffer, size_t size) {
+  uartWriteStr(uartBuf, "frame drawing\n\r", MAX_BUF);
+  for (int i = 0; i < size; i++) {
+    if (i % 128 == 0) {
+      uartWriteStr(uartBuf, "\n\r", 1);
+    }
+    if (frameBuffer[i] == 255) {
+      uartWriteStr(uartBuf, "@", 1);
+    } else {
+      uartWriteStr(uartBuf, " ", 1);
+    }
+  }
+}
+
+void drawFrameOled(uint8_t *frameBuffer, size_t size) {
+  memcpy(SSD1306_Buffer, frameBuffer, size);
+  ssd1306_UpdateScreen();
 }
 
 /*
@@ -142,9 +193,14 @@ int main(void) {
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
-  uartWriteStr(uartBuf, "I2C address: \n\r", MAX_BUF);
-  i2cAddrLCD = scanI2C();
+  i2cAddrOLED = scanI2C();
+  pixelsRecieved = 0;
 
+  ssd1306_Init();
+  ssd1306_Fill(Black);
+  ssd1306_WriteString("Bad Apple!", Font_11x18, White);
+  ssd1306_UpdateScreen();
+  uint8_t readySignal = 0xFF;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -153,7 +209,14 @@ int main(void) {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    uartWriteStr(uartBuf, "Hello World!\n\r", MAX_BUF);
+
+    HAL_UART_Transmit(&hlpuart1, &readySignal, 1, 100);
+    HAL_UART_Receive(&hlpuart1, uartHeader, 2, 33);
+
+    if (uartHeader[0] == 0xAA && uartHeader[1] == 0x55) {
+      uartRecvFrame(frameBuffer, FRAME_BUF_SIZE);
+      drawFrameOled(frameBuffer, FRAME_BUF_SIZE);
+    }
   }
   /* USER CODE END 3 */
 }
@@ -216,7 +279,7 @@ static void MX_I2C1_Init(void) {
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x40B285C2;
+  hi2c1.Init.Timing = 0x00C0216C;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -239,6 +302,10 @@ static void MX_I2C1_Init(void) {
   if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK) {
     Error_Handler();
   }
+
+  /** I2C Fast mode Plus enable
+   */
+  HAL_I2CEx_EnableFastModePlus(I2C_FASTMODEPLUS_I2C1);
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
@@ -259,7 +326,7 @@ static void MX_LPUART1_UART_Init(void) {
 
   /* USER CODE END LPUART1_Init 1 */
   hlpuart1.Instance = LPUART1;
-  hlpuart1.Init.BaudRate = 115200;
+  hlpuart1.Init.BaudRate = 921600;
   hlpuart1.Init.WordLength = UART_WORDLENGTH_8B;
   hlpuart1.Init.StopBits = UART_STOPBITS_1;
   hlpuart1.Init.Parity = UART_PARITY_NONE;
