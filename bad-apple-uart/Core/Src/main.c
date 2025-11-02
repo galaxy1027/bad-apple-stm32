@@ -50,9 +50,7 @@ UART_HandleTypeDef hlpuart1;
 
 /* USER CODE BEGIN PV */
 char uartBuf[MAX_BUF];
-uint8_t i2cAddrOLED;
 uint8_t frameBuffer[FRAME_BUF_SIZE];
-uint16_t pixelsRecieved;
 extern uint8_t SSD1306_Buffer[];
 
 uint8_t uartHeader[2];
@@ -67,8 +65,6 @@ static void MX_I2C1_Init(void);
 void uartWriteStr(char *buf, const char *message, size_t bufSize);
 void uartRecvFrame(uint8_t *buffer, size_t size);
 static uint8_t scanI2C(void);
-void byteToStr(uint8_t b, char *buf, int size);
-void drawFrameUART(uint8_t *frameBuffer, size_t size);
 void drawFrameOled(uint8_t *frameBuffer, size_t size);
 /* USER CODE END PFP */
 
@@ -76,14 +72,12 @@ void drawFrameOled(uint8_t *frameBuffer, size_t size);
 /* USER CODE BEGIN 0 */
 
 /*
-    UART Write String
-    Write a null-terminated string to the UART buffer, then transmit.
-
-    Parameters:
-    buf - pointer to buffer that will be sent over UART
-    message - pointer to string that will be transmitted
-    size - size of the buffer to avoid overflow
-*/
+ *  UART Write String: Writes a null-terminated string to the UART buffer, then transmits
+ *
+ *  buf: pointer to the buffer to store UART data
+ *  message: String to send
+ *  bufSize: size of data to send
+ */
 void uartWriteStr(char *buf, const char *message, size_t bufSize) {
   int i = 0;
   while ((i < bufSize) && (message[i] != '\0')) {
@@ -97,6 +91,12 @@ void uartWriteStr(char *buf, const char *message, size_t bufSize) {
   HAL_UART_Transmit(&hlpuart1, (uint8_t *)uartBuf, bufSize, 10);
 }
 
+/*
+ *  UART Recieve frame: recieves 64-byte chunks of frame data.
+ *
+ *  buffer: location to save frame data
+ *  size: size of frame buffer
+ */
 void uartRecvFrame(uint8_t *buffer, size_t size) {
 
   HAL_StatusTypeDef status;
@@ -115,49 +115,20 @@ void uartRecvFrame(uint8_t *buffer, size_t size) {
     }
   }
 
-  pixelsRecieved = recieved;
 }
 
-void drawFrameUART(uint8_t *frameBuffer, size_t size) {
-  uartWriteStr(uartBuf, "frame drawing\n\r", MAX_BUF);
-  for (int i = 0; i < size; i++) {
-    if (i % 128 == 0) {
-      uartWriteStr(uartBuf, "\n\r", 1);
-    }
-    if (frameBuffer[i] == 255) {
-      uartWriteStr(uartBuf, "@", 1);
-    } else {
-      uartWriteStr(uartBuf, " ", 1);
-    }
-  }
-}
-
+/*
+ * Draw Frame OLED: Draws frame data to the I2C oled screen (SSD1306)
+ *
+ * frameBuffer: pointer to frame data revieved in uartRecvFrame()
+ * size: size of frame data buffer
+ */
 void drawFrameOled(uint8_t *frameBuffer, size_t size) {
   memcpy(SSD1306_Buffer, frameBuffer, size);
   ssd1306_UpdateScreen();
 }
 
-/*
-    Clear Buffer
-    Fill buffer 'buf' of size 'size' with null characters
-*/
-void clearBuf(char *buf, uint16_t size) {
-  for (int i = 0; i < size; i++)
-    buf[i] = 0;
-}
 
-static uint8_t scanI2C(void) {
-  uint8_t addr = 0x03;
-  while (addr < 0x77 &&
-         HAL_I2C_IsDeviceReady(&hi2c1, addr << 1, 3, 5) != HAL_OK) {
-    addr++;
-  }
-  if (addr < 0x80)
-    uartWriteStr(uartBuf, "Device found!", MAX_BUF);
-  else
-    uartWriteStr(uartBuf, "Device NOT found...", MAX_BUF);
-  return addr;
-}
 /* USER CODE END 0 */
 
 /**
@@ -193,8 +164,6 @@ int main(void) {
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
-  i2cAddrOLED = scanI2C();
-  pixelsRecieved = 0;
 
   ssd1306_Init();
   ssd1306_Fill(Black);
@@ -213,6 +182,7 @@ int main(void) {
     HAL_UART_Transmit(&hlpuart1, &readySignal, 1, 100);
     HAL_UART_Receive(&hlpuart1, uartHeader, 2, 33);
 
+    /* Wait for header data to signal that the frame is ready to be drawn */
     if (uartHeader[0] == 0xAA && uartHeader[1] == 0x55) {
       uartRecvFrame(frameBuffer, FRAME_BUF_SIZE);
       drawFrameOled(frameBuffer, FRAME_BUF_SIZE);
